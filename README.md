@@ -6,6 +6,10 @@ A stunning chat input component with an animated liquid metal send button, featu
 ![Built with](https://img.shields.io/badge/Built%20with-Cursor%20AI-blue)
 ![Platform](https://img.shields.io/badge/Platform-WeWeb-purple)
 
+## Inspiration
+
+This component was inspired by [Brett's tweet](https://x.com/BrettFromDJ/status/2002114751078543846) showcasing the liquid glass metal effect. The mesmerizing animation caught my eye, and I recreated it as a functional WeWeb component.
+
 ## Features
 
 - 🌊 **Liquid Metal Animation** - Rotating conic gradient ring with realistic metallic sheen
