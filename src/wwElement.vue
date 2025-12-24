@@ -100,19 +100,15 @@
         </svg>
       </div>
 
-      <!-- Send button with liquid metal effect -->
+      <!-- Send button with WebGL liquid metal -->
       <div class="send-button" :style="buttonStyle" @click="sendMessage">
-        <div class="metal-ring" :style="metalRingStyle"></div>
-        <div class="prismatic-glow" :style="prismaticStyle"></div>
+        <canvas ref="metalCanvas" class="metal-canvas"></canvas>
         <div class="button-inner">
           <svg class="arrow-icon" :style="arrowStyle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 19V5"/>
             <path d="M5 12l7-7 7 7"/>
           </svg>
         </div>
-        <div class="shine-overlay"></div>
-        <div class="ambient-light"></div>
-        <div class="highlight-top"></div>
       </div>
     </div>
 
@@ -164,6 +160,22 @@ export default {
     metalRingStyle() {
       const speed = this.content.animationSpeed || 4;
       const enabled = this.content.animationEnabled !== false;
+      return {
+        animation: enabled ? `rotate-ring ${speed}s linear infinite` : 'none',
+      };
+    },
+    metalRing2Style() {
+      const speed = this.content.animationSpeed || 4;
+      const enabled = this.content.animationEnabled !== false;
+      // Same speed as ring 1 - they rotate together
+      return {
+        animation: enabled ? `rotate-ring ${speed}s linear infinite` : 'none',
+      };
+    },
+    metalRing3Style() {
+      const speed = this.content.animationSpeed || 4;
+      const enabled = this.content.animationEnabled !== false;
+      // Same speed - unified rotation
       return {
         animation: enabled ? `rotate-ring ${speed}s linear infinite` : 'none',
       };
@@ -414,6 +426,284 @@ export default {
         this.showPreviewControls = false;
       }
     },
+
+    // ========== WebGL Liquid Metal Shader ==========
+    initWebGL() {
+      const canvas = this.$refs.metalCanvas;
+      if (!canvas) return;
+
+      const size = this.content.buttonSize || 56;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = size * dpr;
+      canvas.height = size * dpr;
+
+      const gl = canvas.getContext('webgl', { alpha: true, antialias: true, premultipliedAlpha: false });
+      if (!gl) {
+        console.warn('WebGL not supported');
+        return;
+      }
+
+      this.gl = gl;
+      this.startTime = performance.now();
+
+      // Vertex shader
+      const vsSource = `
+        attribute vec2 aPosition;
+        varying vec2 vUv;
+        void main() {
+          vUv = aPosition * 0.5 + 0.5;
+          gl_Position = vec4(aPosition, 0.0, 1.0);
+        }
+      `;
+
+      // Fragment shader - Clean Liquid Metal with Chromatic Refraction
+      const fsSource = `
+        precision highp float;
+        varying vec2 vUv;
+        uniform float uTime;
+        uniform float uSpeed;
+        uniform float uSoftness;
+        uniform float uDistortion;
+
+        #define PI 3.14159265359
+        #define TAU 6.28318530718
+
+        // Smooth noise (minimal, for subtle surface variation)
+        float hash(vec2 p) {
+          return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+        }
+
+        float noise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          return mix(
+            mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x),
+            mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x),
+            f.y
+          );
+        }
+
+        // Smooth fbm for gentle surface undulation
+        float fbm(vec2 p) {
+          float v = 0.0;
+          float a = 0.5;
+          for (int i = 0; i < 3; i++) {
+            v += a * noise(p);
+            p *= 2.0;
+            a *= 0.5;
+          }
+          return v;
+        }
+
+        void main() {
+          vec2 uv = vUv * 2.0 - 1.0;
+          float dist = length(uv);
+          float angle = atan(uv.y, uv.x);
+
+          // Ring mask with crisp edges
+          float ringOuter = 1.0;
+          float ringInner = 0.82;
+          float ringMask = smoothstep(ringOuter, ringOuter - 0.015, dist) * 
+                          smoothstep(ringInner - 0.015, ringInner, dist);
+
+          // Smooth animation speed
+          float time = uTime * uSpeed * 0.5;
+
+          // === ROTATING CHROME GRADIENT ===
+          float rotatingAngle = angle + time;
+          
+          // Main chrome reflection - smooth rotating gradient
+          float chrome = sin(rotatingAngle * 2.0) * 0.5 + 0.5;
+          chrome = smoothstep(0.15, 0.85, chrome);
+          
+          // Secondary reflection layer
+          float chrome2 = sin(rotatingAngle * 1.0 + PI * 0.5) * 0.5 + 0.5;
+          chrome2 = smoothstep(0.2, 0.8, chrome2);
+          
+          // Blend for smooth metallic gradient
+          float metallic = mix(chrome, chrome2, 0.35);
+
+          // === BASE METAL COLORS === (Pure neutral silver/chrome)
+          vec3 darkMetal = vec3(0.05, 0.05, 0.05);   // Deep black shadow
+          vec3 brightMetal = vec3(0.95, 0.95, 0.95); // Pure white highlight
+
+          // High contrast metallic gradient
+          vec3 baseColor = mix(darkMetal, brightMetal, metallic);
+
+          // === CHROMATIC ABERRATION / REFRACTION ===
+          // Color fringing at transition edges
+          float chromeR = sin((angle + 0.15 + time) * 2.0) * 0.5 + 0.5;
+          float chromeB = sin((angle - 0.15 + time) * 2.0) * 0.5 + 0.5;
+          
+          chromeR = smoothstep(0.15, 0.85, chromeR);
+          chromeB = smoothstep(0.15, 0.85, chromeB);
+
+          // Warm color (orange/gold)
+          vec3 warmRefract = vec3(1.0, 0.65, 0.25);
+          // Cool color (light blue)
+          vec3 coolRefract = vec3(0.6, 0.8, 1.0);
+
+          // Apply at edges where chrome transitions
+          float warmMask = max(0.0, chromeR - chrome) * 0.8;
+          float coolMask = max(0.0, chrome - chromeB) * 0.6;
+          
+          vec3 color = baseColor;
+          color = mix(color, warmRefract, warmMask * 0.4);
+          color = mix(color, coolRefract, coolMask * 0.3);
+
+          // === SPECULAR HIGHLIGHTS ===
+          // Main rotating highlight
+          float highlightAngle = time * 1.2;
+          float highlight = cos(angle - highlightAngle);
+          highlight = pow(max(0.0, highlight), 16.0);
+          
+          // Secondary highlight opposite side
+          float highlight2 = cos(angle - highlightAngle + PI);
+          highlight2 = pow(max(0.0, highlight2), 6.0) * 0.3;
+          
+          // Pure white highlights
+          color += vec3(1.0) * highlight * 1.0;
+          color += vec3(0.85) * highlight2;
+
+          // === SUBTLE SURFACE VARIATION ===
+          float surfaceNoise = fbm(vec2(angle * 2.0, dist * 8.0) + time * 0.15);
+          color *= 0.96 + surfaceNoise * 0.08;
+
+          // === RING DEPTH / 3D CURVATURE ===
+          float ringDepth = sin((dist - ringInner) / (ringOuter - ringInner) * PI);
+          color *= 0.75 + 0.25 * ringDepth;
+
+          // === RIM HIGHLIGHTS ===
+          // Pure silver edges
+          float innerRim = smoothstep(ringInner + 0.025, ringInner, dist);
+          float outerRim = smoothstep(ringOuter - 0.025, ringOuter, dist);
+          color += vec3(0.8) * innerRim * 0.5;
+          color += vec3(0.7) * outerRim * 0.4;
+
+          // === FRESNEL EDGE BRIGHTENING ===
+          float ringEdgeDist = abs((dist - ringInner) / (ringOuter - ringInner) - 0.5) * 2.0;
+          float fresnelEdge = pow(ringEdgeDist, 2.0) * 0.12;
+          color += vec3(0.85) * fresnelEdge;
+
+          // === FINAL OUTPUT ===
+          // Boost contrast for more metallic look
+          color = pow(color, vec3(0.92));
+          
+          // Clamp
+          color = min(color, vec3(1.15));
+
+          gl_FragColor = vec4(color, ringMask);
+        }
+      `;
+
+      // Compile shaders
+      const vs = this.createShader(gl, gl.VERTEX_SHADER, vsSource);
+      const fs = this.createShader(gl, gl.FRAGMENT_SHADER, fsSource);
+      if (!vs || !fs) return;
+
+      // Create program
+      const program = gl.createProgram();
+      gl.attachShader(program, vs);
+      gl.attachShader(program, fs);
+      gl.linkProgram(program);
+
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        console.error('Program link error:', gl.getProgramInfoLog(program));
+        return;
+      }
+
+      this.program = program;
+      gl.useProgram(program);
+
+      // Geometry - fullscreen quad
+      const vertices = new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]);
+      const buffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+      const aPosition = gl.getAttribLocation(program, 'aPosition');
+      gl.enableVertexAttribArray(aPosition);
+      gl.vertexAttribPointer(aPosition, 2, gl.FLOAT, false, 0, 0);
+
+      // Uniforms
+      this.uniforms = {
+        uTime: gl.getUniformLocation(program, 'uTime'),
+        uSpeed: gl.getUniformLocation(program, 'uSpeed'),
+        uSoftness: gl.getUniformLocation(program, 'uSoftness'),
+        uDistortion: gl.getUniformLocation(program, 'uDistortion'),
+      };
+
+      // Enable blending
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+      // Start animation
+      this.animate();
+    },
+
+    createShader(gl, type, source) {
+      const shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        console.error('Shader error:', gl.getShaderInfoLog(shader));
+        gl.deleteShader(shader);
+        return null;
+      }
+      return shader;
+    },
+
+    animate() {
+      if (!this.gl || !this.program) return;
+
+      const gl = this.gl;
+      const speed = this.content.animationSpeed || 4;
+      const enabled = this.content.animationEnabled !== false;
+
+      const elapsed = enabled ? (performance.now() - this.startTime) / 1000 : 0;
+
+      gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+
+      gl.uniform1f(this.uniforms.uTime, elapsed);
+      gl.uniform1f(this.uniforms.uSpeed, 2.0 / speed);  // Fast visible rotation
+      gl.uniform1f(this.uniforms.uSoftness, 0.65);      // Sharper highlights
+      gl.uniform1f(this.uniforms.uDistortion, 1.0);     // Strong liquid movement
+
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+      this.rafId = requestAnimationFrame(() => this.animate());
+    },
+
+    destroyWebGL() {
+      if (this.rafId) {
+        cancelAnimationFrame(this.rafId);
+      }
+      if (this.gl && this.program) {
+        this.gl.deleteProgram(this.program);
+      }
+      this.gl = null;
+      this.program = null;
+    },
+  },
+
+  mounted() {
+    this.$nextTick(() => {
+      this.initWebGL();
+    });
+  },
+
+  beforeUnmount() {
+    this.destroyWebGL();
+  },
+
+  watch: {
+    'content.buttonSize'() {
+      this.destroyWebGL();
+      this.$nextTick(() => this.initWebGL());
+    },
   },
 };
 </script>
@@ -490,148 +780,57 @@ export default {
   }
 }
 
-/* Send button with liquid metal effect */
+/* Send button - WebGL liquid metal */
 .send-button {
   border-radius: 50%;
   position: relative;
   cursor: pointer;
-  transition: transform 0.2s ease;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 
   &:hover {
-    transform: scale(1.02);
+    transform: scale(1.03);
 
     .arrow-icon {
-      color: #9a9a9a;
-    }
-
-    .shine-overlay {
-      opacity: 1;
+      color: #c0c0c0;
     }
   }
 
   &:active {
-    transform: scale(0.98);
+    transform: scale(0.97);
   }
 }
 
-.metal-ring {
+/* WebGL canvas */
+.metal-canvas {
   position: absolute;
   inset: 0;
+  width: 100% !important;
+  height: 100% !important;
   border-radius: 50%;
-  padding: 3px;
-  background: conic-gradient(
-    from 180deg,
-    #1a1a1a 0deg,
-    #3a3a3a 30deg,
-    #6a6a6a 60deg,
-    #9a9a9a 90deg,
-    #c0c0c0 120deg,
-    #e0e0e0 140deg,
-    #ffffff 160deg,
-    #e0e0e0 180deg,
-    #c0c0c0 200deg,
-    #9a9a9a 230deg,
-    #6a6a6a 270deg,
-    #3a3a3a 310deg,
-    #1a1a1a 360deg
-  );
-  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
+  pointer-events: none;
 }
 
-@keyframes rotate-ring {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-.prismatic-glow {
-  position: absolute;
-  inset: -2px;
-  border-radius: 50%;
-  background: conic-gradient(
-    from 200deg,
-    transparent 0deg,
-    transparent 140deg,
-    rgba(255, 200, 150, 0.5) 160deg,
-    rgba(255, 140, 100, 0.4) 180deg,
-    rgba(255, 100, 80, 0.3) 200deg,
-    rgba(100, 120, 255, 0.4) 220deg,
-    rgba(80, 150, 255, 0.3) 240deg,
-    transparent 260deg,
-    transparent 360deg
-  );
-  filter: blur(3px);
-  opacity: 1;
-}
-
+/* Inner button face */
 .button-inner {
   position: absolute;
-  inset: 4px;
+  inset: 9%;
   border-radius: 50%;
-  background: radial-gradient(
-    ellipse at 30% 30%,
-    #2a2a2a 0%,
-    #1a1a1a 40%,
-    #0d0d0d 100%
-  );
+  background: 
+    radial-gradient(ellipse 80% 60% at 35% 30%, rgba(45, 45, 50, 0.9) 0%, transparent 50%),
+    linear-gradient(180deg, #18181a 0%, #0c0c0e 100%);
   display: flex;
   align-items: center;
   justify-content: center;
   box-shadow: 
-    inset 0 2px 4px rgba(255, 255, 255, 0.05),
-    inset 0 -2px 4px rgba(0, 0, 0, 0.3);
+    inset 0 1px 4px rgba(255, 255, 255, 0.06),
+    inset 0 -2px 8px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(0, 0, 0, 0.3);
 }
 
+/* Arrow icon */
 .arrow-icon {
-  color: #6a6a6a;
-  transition: color 0.2s ease;
-}
-
-.shine-overlay {
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  background: linear-gradient(
-    135deg,
-    transparent 40%,
-    rgba(255, 255, 255, 0.1) 50%,
-    transparent 60%
-  );
-  opacity: 0;
-  transition: opacity 0.3s ease;
-}
-
-.ambient-light {
-  position: absolute;
-  top: -2px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 40px;
-  height: 8px;
-  background: radial-gradient(
-    ellipse,
-    rgba(255, 255, 255, 0.15) 0%,
-    transparent 70%
-  );
-  border-radius: 50%;
-}
-
-.highlight-top {
-  position: absolute;
-  top: 6px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 50%;
-  height: 20px;
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.08) 0%,
-    transparent 100%
-  );
-  border-radius: 50%;
-  pointer-events: none;
+  color: #707070;
+  transition: color 0.3s ease;
 }
 
 /* Media preview */
